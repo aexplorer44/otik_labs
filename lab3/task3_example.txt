@@ -1,0 +1,5 @@
+mkdir -p folder1/sub1/sub2
+
+printf 'hello there!\n' > folder1/file1.txt
+printf 'i am using github\n' > folder1/sub1/file2.txt
+printf 'it is kinda late\n' > folder1/sub1/sub2/file3.txt
