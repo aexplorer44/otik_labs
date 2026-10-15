@@ -15,6 +15,7 @@
 //       показать содержимое архива (без распаковки).
 
 #define _POSIX_C_SOURCE 200809L
+// чтобы компилятор не ругался на strdup, readdir, mkdir, fileno...
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +26,7 @@
 #include <sys/types.h>
 #include <dirent.h>
 
-/* константы формата */
+// константы формата:
 
 static const unsigned char SIGNATURE[6]  = { 'D', 'M', 'E', '0', '0', '7' };
 static const uint16_t      FORMAT_VERSION = 23;
@@ -34,23 +35,24 @@ static const uint8_t COMPRESSOR_MEM   = 0;  /* нет сжатия (с памя�
 static const uint8_t COMPRESSOR_NOMEM = 0;  /* нет сжатия (без памяти) */
 static const uint8_t NOISE_PROTECTION = 0;  /* нет защиты */
 
-enum { ENTRY_FILE = 0, ENTRY_DIR = 1 };
+enum { ENTRY_FILE = 0, ENTRY_DIR = 1 }; /* для типов записей */
 
-/* динамический массив записей манифеста */
-
+// одна запись архива
 typedef struct {
     uint8_t  type;
     uint64_t data_len;
-    char    *name;         /* malloc'ed, путь через '/', без '\0' в файле */
+    char    *name;         /* malloc'ed, хранит путь через '/', без '\0' в файле */
 } Entry;
 
+// динамический массив записей манифеста
 typedef struct {
     Entry   *items;
-    size_t   count;
-    size_t   cap;
+    size_t   count;        /* сколько занято */
+    size_t   cap;          /* сколько выделено*/
 } Manifest;
 
 static void man_init(Manifest *m) { m->items = NULL; m->count = 0; m->cap = 0; }
+// инициализация нулями
 
 static void man_free(Manifest *m) {
     for (size_t i = 0; i < m->count; ++i) free(m->items[i].name);
@@ -58,9 +60,10 @@ static void man_free(Manifest *m) {
     m->items = NULL; m->count = 0; m->cap = 0;
 }
 
+// добавляет одну новую запись в Manifest, при необходимости расширяя его
 static int man_push(Manifest *m, uint8_t type, const char *name, uint64_t data_len) {
     if (m->count == m->cap) {
-        size_t nc = m->cap ? m->cap * 2 : 16;
+        size_t nc = m->cap ? m->cap * 2 : 16; /* вычисление нового размера массива */
         Entry *ni = realloc(m->items, nc * sizeof(Entry));
         if (!ni) return -1;
         m->items = ni; m->cap = nc;
@@ -68,12 +71,16 @@ static int man_push(Manifest *m, uint8_t type, const char *name, uint64_t data_l
     m->items[m->count].type = type;
     m->items[m->count].data_len = data_len;
     m->items[m->count].name = strdup(name);
+    /* strdup(name) вычисляет strlen(name) + 1, делает malloc,
+    копирует строку вместе с завершающим '\0',
+    возвращает указатель.*/
+
     if (!m->items[m->count].name) return -1;
     m->count++;
     return 0;
 }
 
-/* утилиты: числовая запись/чтение LE */
+// утилиты: числовая запись/чтение LE 
 
 static int w_u16(FILE *f, uint16_t v) {
     unsigned char b[2] = { v & 0xFF, (v >> 8) & 0xFF };
@@ -110,9 +117,9 @@ static int r_u8(FILE *f, uint8_t *v) {
     return fread(v, 1, 1, f) == 1 ? 0 : -1;
 }
 
-/* обход входных путей */
+// обход входных путей
 
-/* нормализуем путь: убираем ведущий "./" и завершающие '/'. */
+// нормализуем путь: убираем ведущий "./" и завершающие '/'
 static char *normalize_path(const char *p) {
     while (p[0] == '.' && p[1] == '/') p += 2;
     size_t n = strlen(p);
@@ -124,7 +131,7 @@ static char *normalize_path(const char *p) {
 }
 
 static int is_dir(const char *p) {
-    struct stat st;
+    struct stat st; /* заполняет struct stat информацией о файле: тип, права, размер */
     return (stat(p, &st) == 0 && S_ISDIR(st.st_mode));
 }
 
@@ -133,8 +140,10 @@ static int is_reg(const char *p) {
     return (stat(p, &st) == 0 && S_ISREG(st.st_mode));
 }
 
-/* рекурсивный обход. root_arc — путь, под которым кладём элемент в архив. */
-static int walk_add(const char *fs_path, const char *arc_path, Manifest *m) {
+// рекурсивный обход. root_arc — путь, под которым кладём элемент в архив
+static int walk_add(const char *fs_path, const char *arc_path, Manifest *m) 
+// fs_path — путь в файловой системе, arc_path — путь в архиве
+{
     if (is_dir(fs_path)) {
         if (man_push(m, ENTRY_DIR, arc_path, 0) != 0) return -1;
 
@@ -146,11 +155,13 @@ static int walk_add(const char *fs_path, const char *arc_path, Manifest *m) {
             if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
 
             size_t need = strlen(fs_path) + 1 + strlen(e->d_name) + 1;
+            /* длина пути родителя + / + имя + '\0' */
             char *child_fs  = malloc(need);
             char *child_arc = malloc(strlen(arc_path) + 1 + strlen(e->d_name) + 1);
             if (!child_fs || !child_arc) { free(child_fs); free(child_arc); closedir(d); return -1; }
 
-            snprintf(child_fs,  need, "%s/%s", fs_path,  e->d_name);
+            snprintf(child_fs, need, "%s/%s", fs_path,  e->d_name);
+            /* snprintf форматирует в буфер, гарантирует '\0' и не пишет больше size (need) бай*/
             snprintf(child_arc, strlen(arc_path)+1+strlen(e->d_name)+1,
                      "%s/%s", arc_path, e->d_name);
 
@@ -165,14 +176,14 @@ static int walk_add(const char *fs_path, const char *arc_path, Manifest *m) {
         if (stat(fs_path, &st) != 0) return -1;
         return man_push(m, ENTRY_FILE, arc_path, (uint64_t)st.st_size);
     } else {
-        fprintf(stderr, "Пропуск (не файл и не каталог): %s\n", fs_path);
+        fprintf(stderr, "пропуск (не файл и не каталог): %s\n", fs_path);
         return -1;
     }
 }
 
-/* сериализация манифеста */
+// сериализация манифеста
 
-/* считаем размер манифеста в байтах для поля ServiceLen. */
+// считаем размер манифеста в байтах для поля ServiceLen
 static int manifest_size(const Manifest *m, uint64_t *out_sz) {
     uint64_t sz = 4;  /* entry_count */
     for (size_t i = 0; i < m->count; ++i) {
@@ -219,7 +230,7 @@ static int manifest_read(FILE *f, uint32_t entry_count, Manifest *m) {
     return 0;
 }
 
-/* копирование данных */
+// копирование данных 
 
 static int copy_n(FILE *in, FILE *out, uint64_t n) {
     unsigned char buf[65536];
@@ -237,7 +248,7 @@ static int copy_n(FILE *in, FILE *out, uint64_t n) {
 /* кодер */
 
 static int cmd_encode(const char *archive, int npaths, char **paths) {
-    /* 1. Собираем манифест */
+    /* 1. собираем манифест */
     Manifest m; man_init(&m);
     uint64_t total_data = 0;
 
@@ -258,7 +269,7 @@ static int cmd_encode(const char *archive, int npaths, char **paths) {
         man_free(&m); return 1;
     }
 
-    /* 2. Пишем архив */
+    /* 2. пишем архив */
     FILE *out = fopen(archive, "wb");
     if (!out) { perror(archive); man_free(&m); return 1; }
 
@@ -269,13 +280,13 @@ static int cmd_encode(const char *archive, int npaths, char **paths) {
         if (w_u8 (out, COMPRESSOR_MEM)   != 0) break;
         if (w_u8 (out, COMPRESSOR_NOMEM) != 0) break;
         if (w_u8 (out, NOISE_PROTECTION) != 0) break;
-        if (w_u8 (out, 0)                != 0) break;   /* Reserved */
+        if (w_u8 (out, 0)                != 0) break;
         if (w_u32(out, (uint32_t)slen)   != 0) break;
         if (w_u64(out, total_data)       != 0) break;
 
         if (manifest_write(out, &m) != 0) break;
 
-        /* 3. Пишем данные файлов */
+        /* 3. пишем данные файлов */
         for (size_t i = 0; i < m.count; ++i) {
             if (m.items[i].type != ENTRY_FILE) continue;
 
@@ -284,12 +295,12 @@ static int cmd_encode(const char *archive, int npaths, char **paths) {
                 /* путь в манифесте может отличаться от fs-пути:
                    у нас arc_path == fs_path без ведущего "./", поэтому
                    открываем по исходному имени, полученному при обходе.
-                   Храним его в манифесте — совпадает. */
+                   храним его в манифесте — совпадает */
                 perror(m.items[i].name);
                 ok = 0; break;
             }
             if (copy_n(in, out, m.items[i].data_len) != 0) {
-                fprintf(stderr, "Ошибка копирования: %s\n", m.items[i].name);
+                fprintf(stderr, "ошибка копирования: %s\n", m.items[i].name);
                 fclose(in); ok = 0; break;
             }
             fclose(in);
@@ -297,17 +308,24 @@ static int cmd_encode(const char *archive, int npaths, char **paths) {
     } while (0);
 
     fclose(out);
-    man_free(&m);
 
-    if (!ok) { remove(archive); return 1; }
+    if (!ok) {
+        man_free(&m);
+        remove(archive);
+        return 1;
+    }
+
     printf("OK: архив %s создан (%zu записей, %llu байт данных)\n",
-           archive, (size_t)0, (unsigned long long)0); /* заглушка ниже */
+           archive, m.count, (unsigned long long)total_data);
+
+    man_free(&m);
     return 0;
+
 }
 
 /* декодер */
 
-/* Создать все каталоги в пути (аналог mkdir -p для относительного пути). */
+// создать все каталоги в пути (аналог mkdir -p для относительного пути)
 static int mkdirs_for(const char *path) {
     char *tmp = strdup(path);
     if (!tmp) return -1;
@@ -328,25 +346,25 @@ static int cmd_decode(const char *archive, const char *out_dir) {
     FILE *in = fopen(archive, "rb");
     if (!in) { perror(archive); return 1; }
 
-    /* 1. Общий заголовок — все проверки ДО создания выходных файлов */
+    /* 1. общий заголовок — все проверки до создания выходных файлов */
     unsigned char sig[6];
     if (fread(sig, 1, 6, in) != 6 || memcmp(sig, SIGNATURE, 6) != 0) {
-        fprintf(stderr, "Ошибка: неверная сигнатура архива\n");
+        fprintf(stderr, "ошибка: неверная сигнатура архива\n");
         fclose(in); return 1;
     }
     uint16_t ver;
     if (r_u16(in, &ver) != 0 || ver != FORMAT_VERSION) {
-        fprintf(stderr, "Ошибка: неподдерживаемая версия формата\n");
+        fprintf(stderr, "ошибка: неподдерживаемая версия формата\n");
         fclose(in); return 1;
     }
     uint8_t cm, cnm, np, rsv;
     if (r_u8(in, &cm)  != 0 || r_u8(in, &cnm) != 0 ||
         r_u8(in, &np)  != 0 || r_u8(in, &rsv) != 0) {
-        fprintf(stderr, "Ошибка: повреждён заголовок\n");
+        fprintf(stderr, "ошибка: поврежден заголовок\n");
         fclose(in); return 1;
     }
     if (cm != COMPRESSOR_MEM || cnm != COMPRESSOR_NOMEM || np != NOISE_PROTECTION) {
-        fprintf(stderr, "Ошибка: неподдерживаемые алгоритмы (mem=%u nomem=%u noise=%u)\n",
+        fprintf(stderr, "ошибка: неподдерживаемые алгоритмы (mem=%u nomem=%u noise=%u)\n",
                 cm, cnm, np);
         fclose(in); return 1;
     }
@@ -354,29 +372,29 @@ static int cmd_decode(const char *archive, const char *out_dir) {
     uint32_t slen;
     uint64_t total;
     if (r_u32(in, &slen) != 0 || r_u64(in, &total) != 0) {
-        fprintf(stderr, "Ошибка: повреждён заголовок\n");
+        fprintf(stderr, "ошибка: поврежден заголовок\n");
         fclose(in); return 1;
     }
 
-    /* 2. Манифест */
+    /* 2. манифест */
     uint32_t entry_count;
     if (r_u32(in, &entry_count) != 0) {
-        fprintf(stderr, "Ошибка: нет манифеста\n");
+        fprintf(stderr, "ошибка: нет манифеста\n");
         fclose(in); return 1;
     }
 
     Manifest m;
     if (manifest_read(in, entry_count, &m) != 0) {
-        fprintf(stderr, "Ошибка: повреждён манифест\n");
+        fprintf(stderr, "ошибка: поврежден манифест\n");
         fclose(in); man_free(&m); return 1;
     }
 
-    /* 3. Создаём out_dir */
+    /* 3. создаем out_dir */
     if (mkdir(out_dir, 0755) != 0 && errno != EEXIST) {
         perror(out_dir); fclose(in); man_free(&m); return 1;
     }
 
-    /* 4. Проходим по записям в порядке манифеста */
+    /* 4. проходим по записям в порядке манифеста */
     for (size_t i = 0; i < m.count; ++i) {
         Entry *e = &m.items[i];
         size_t need = strlen(out_dir) + 1 + strlen(e->name) + 1;
@@ -386,21 +404,21 @@ static int cmd_decode(const char *archive, const char *out_dir) {
 
         if (e->type == ENTRY_DIR) {
             if (mkdir(full, 0755) != 0 && errno != EEXIST) {
-                fprintf(stderr, "Не удалось создать каталог: %s\n", full);
+                fprintf(stderr, "не удалось создать каталог: %s\n", full);
                 free(full); fclose(in); man_free(&m); return 1;
             }
         } else {
             if (mkdirs_for(full) != 0) {
-                fprintf(stderr, "Не удалось создать родителя для: %s\n", full);
+                fprintf(stderr, "не удалось создать родителя для: %s\n", full);
                 free(full); fclose(in); man_free(&m); return 1;
             }
             FILE *fo = fopen(full, "wb");
             if (!fo) {
-                fprintf(stderr, "Не удалось создать файл: %s\n", full);
+                fprintf(stderr, "не удалось создать файл: %s\n", full);
                 free(full); fclose(in); man_free(&m); return 1;
             }
             if (copy_n(in, fo, e->data_len) != 0) {
-                fprintf(stderr, "Ошибка чтения данных для: %s\n", full);
+                fprintf(stderr, "ошибка чтения данных для: %s\n", full);
                 fclose(fo); free(full); fclose(in); man_free(&m); return 1;
             }
             fclose(fo);

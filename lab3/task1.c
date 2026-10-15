@@ -1,13 +1,12 @@
 // gcc -Wall -Wextra -O2 -o task1 task1.c
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
 // параметры формата:
 static const unsigned char SIGNATURE[6] = { 'L', 'A', 'B', '3', '0', '1' };
-static const uint16_t      FORMAT_VERSION = 0;   // для ЛЗ-1 — 0
+static const uint16_t      FORMAT_VERSION = 0;   /* для ЛЗ-1 — 0 */ 
 
 // запись заголовка в архив (little-endian для чисел)
 static int write_header(FILE *out, uint64_t original_len) {
@@ -31,16 +30,16 @@ static int write_header(FILE *out, uint64_t original_len) {
 
 // кодер
 static int encode(const char *in_path, const char *archive_path) {
-    FILE *in = fopen(in_path, "rb");
+    FILE *in = fopen(in_path, "rb"); /* чтение бинарно */
     if (!in) { perror("fopen input"); return 1; }
 
-    // узнаем длину входного файла
+    // узнаем длину входного файла: переход на последнюю позицию, rewind - возврат и сброс флага ошибки
     if (fseek(in, 0, SEEK_END) != 0) { perror("fseek"); fclose(in); return 1; }
     long sz = ftell(in);
     if (sz < 0) { perror("ftell"); fclose(in); return 1; }
     rewind(in);
 
-    FILE *out = fopen(archive_path, "wb");
+    FILE *out = fopen(archive_path, "wb"); /* запись бинарно */
     if (!out) { perror("fopen archive"); fclose(in); return 1; }
 
     if (write_header(out, (uint64_t)sz) != 0) {
@@ -51,7 +50,8 @@ static int encode(const char *in_path, const char *archive_path) {
     // побайтовое копирование
     unsigned char buf[65536];
     size_t rd;
-    while ((rd = fread(buf, 1, sizeof(buf), in)) > 0) {
+    while ((rd = fread(buf, 1, sizeof(buf), in)) > 0) /* по одному байту до конца буфера */
+    {
         if (fwrite(buf, 1, rd, out) != rd) {
             fprintf(stderr, "Ошибка записи данных\n");
             fclose(in); fclose(out); return 1;
@@ -72,30 +72,32 @@ static int decode(const char *archive_path, const char *out_path) {
     // 1) сигнатура
     unsigned char sig[6];
     if (fread(sig, 1, 6, in) != 6) {
-        fprintf(stderr, "Архив слишком короткий (нет сигнатуры)\n");
+        fprintf(stderr, "архив слишком короткий (нет сигнатуры)\n");
         fclose(in); return 1;
     }
-    if (memcmp(sig, SIGNATURE, 6) != 0) {
-        fprintf(stderr, "Неверная сигнатура архива\n");
-        fclose(in); return 1;     // ВАЖНО: выходной файл НЕ создаём
+    if (memcmp(sig, SIGNATURE, 6) != 0) /* побайтовое сравнение */
+    {
+        fprintf(stderr, "неверная сигнатура архива\n");
+        fclose(in); return 1;
     }
+    // пока мы не убедились, что это наш архив, не открываем выходной файл
 
     // 2) версия
     unsigned char v[2];
     if (fread(v, 1, 2, in) != 2) {
-        fprintf(stderr, "Архив повреждён (нет версии)\n");
+        fprintf(stderr, "архив повреждён (нет версии)\n");
         fclose(in); return 1;
     }
     uint16_t version = (uint16_t)v[0] | ((uint16_t)v[1] << 8);
     if (version != FORMAT_VERSION) {
-        fprintf(stderr, "Неподдерживаемая версия формата: %u\n", version);
-        fclose(in); return 1;     // тоже не создаём выходной файл
+        fprintf(stderr, "неподдерживаемая версия формата: %u\n", version);
+        fclose(in); return 1;
     }
 
     // 3) длина
     unsigned char n[8];
     if (fread(n, 1, 8, in) != 8) {
-        fprintf(stderr, "Архив повреждён (нет длины)\n");
+        fprintf(stderr, "архив повреждён (нет длины)\n");
         fclose(in); return 1;
     }
     uint64_t original_len = 0;
@@ -110,14 +112,15 @@ static int decode(const char *archive_path, const char *out_path) {
     unsigned char buf[65536];
     uint64_t left = original_len;
     while (left > 0) {
-        size_t want = (left < sizeof(buf)) ? (size_t)left : sizeof(buf);
+        size_t want = (left < sizeof(buf)) ? (size_t)left : sizeof(buf); 
+        // сколько читаем за раз: либо остаток left, либо целый буфер
         size_t rd = fread(buf, 1, want, in);
         if (rd == 0) {
-            fprintf(stderr, "Неожиданный конец архива\n");
+            fprintf(stderr, "неожиданный конец архива\n");
             fclose(in); fclose(out); return 1;
         }
         if (fwrite(buf, 1, rd, out) != rd) {
-            fprintf(stderr, "Ошибка записи выходного файла\n");
+            fprintf(stderr, "ошибка записи выходного файла\n");
             fclose(in); fclose(out); return 1;
         }
         left -= rd;
@@ -129,7 +132,8 @@ static int decode(const char *archive_path, const char *out_path) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 4) {
+    if (argc != 4) /* 4: имя программы, команда, исходный файл, файл выхода*/
+    {
         fprintf(stderr,
             "как использовать:\n"
             "  %s encode <входной_файл> <архив>\n"
